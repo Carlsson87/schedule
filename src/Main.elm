@@ -27,19 +27,11 @@ main =
 
 subscriptions : Model -> Sub Msg
 subscriptions model =
-    Sub.batch
-        [ if model.modifierIsDepressed then
-            Browser.Events.onKeyUp (Decode.succeed ModifierKeyUp)
+    if model.pointerIsDown then
+        Browser.Events.onMouseUp (Decode.succeed MouseUp)
 
-          else
-            Browser.Events.onKeyDown decodeModifierKey
-                |> Sub.map (always ModifierKeyDown)
-        , if model.pointerIsDown then
-            Browser.Events.onMouseUp (Decode.succeed MouseUp)
-
-          else
-            Sub.none
-        ]
+    else
+        Sub.none
 
 
 decodeModifierKey : Decoder ()
@@ -58,8 +50,7 @@ decodeModifierKey =
 type alias Model =
     { segments : Dict Int Activity
     , pointerIsDown : Bool
-    , selectedActivity : Activity
-    , modifierIsDepressed : Bool
+    , selectedActivity : Maybe Activity
     }
 
 
@@ -75,8 +66,7 @@ init : String -> ( Model, Cmd Msg )
 init flags =
     ( { segments = fromString <| String.dropLeft 3 flags
       , pointerIsDown = False
-      , selectedActivity = Work
-      , modifierIsDepressed = False
+      , selectedActivity = Just Work
       }
     , Cmd.none
     )
@@ -86,64 +76,48 @@ type Msg
     = MouseDown Int
     | MouseMove Int
     | MouseUp
-    | ClearSegments
-    | ActivityWasSelected Activity
-    | ModifierKeyUp
-    | ModifierKeyDown
+    | ActivityWasSelected (Maybe Activity)
 
 
 update : Msg -> Model -> ( Model, Cmd Msg )
 update msg model =
     case msg of
         MouseDown y ->
-            if model.modifierIsDepressed then
-                ( { model | pointerIsDown = True, segments = Dict.remove y model.segments }
-                , Cmd.none
-                )
+            case model.selectedActivity of
+                Nothing ->
+                    ( { model | pointerIsDown = True, segments = Dict.remove y model.segments }
+                    , Cmd.none
+                    )
 
-            else
-                ( { model | pointerIsDown = True, segments = Dict.insert y model.selectedActivity model.segments }
-                , Cmd.none
-                )
+                Just activity ->
+                    ( { model | pointerIsDown = True, segments = Dict.insert y activity model.segments }
+                    , Cmd.none
+                    )
 
         MouseMove y ->
-            if model.pointerIsDown && model.modifierIsDepressed then
-                ( { model | segments = Dict.remove y model.segments }
-                , Cmd.none
-                )
+            case ( model.pointerIsDown, model.selectedActivity ) of
+                ( True, Nothing ) ->
+                    ( { model | segments = Dict.remove y model.segments }
+                    , Cmd.none
+                    )
 
-            else if model.pointerIsDown then
-                ( { model | segments = Dict.insert y model.selectedActivity model.segments }
-                , Cmd.none
-                )
+                ( True, Just activity ) ->
+                    ( { model | segments = Dict.insert y activity model.segments }
+                    , Cmd.none
+                    )
 
-            else
-                ( model
-                , Cmd.none
-                )
+                ( False, _ ) ->
+                    ( model
+                    , Cmd.none
+                    )
 
         MouseUp ->
             ( { model | pointerIsDown = False }
             , updatedSchedule (export model.segments)
             )
 
-        ClearSegments ->
-            ( { model | segments = Dict.empty }
-            , Cmd.none
-            )
-
         ActivityWasSelected activity ->
             ( { model | selectedActivity = activity }
-            , Cmd.none
-            )
-
-        ModifierKeyDown ->
-            ( { model | modifierIsDepressed = True }
-            , Cmd.none
-            )
-
-        ModifierKeyUp ->
-            ( { model | modifierIsDepressed = False }
             , Cmd.none
             )
 
@@ -163,40 +137,27 @@ view model =
             }
     in
     Html.div
-        [ Attr.style "margin" "0 auto"
-        , Attr.style "width" "900px"
-        ]
-        [ Html.h1
-            [ Attr.style "text-align" "center"
-            , Attr.style "margin" "50px 0"
-            ]
-            [ Html.text "Schema" ]
-        , Html.div
-            [ Attr.style "flex" "0 0 900px"
-            , Attr.style "display" "flex"
+        [ Attr.style "padding" "20px" ]
+        [ Html.div
+            [ Attr.style "display" "flex"
             ]
             [ Html.div
-                [ Attr.style "flex" "0 0 200px"
+                [ Attr.style "flex" "0 0 auto"
                 , Attr.style "display" "flex"
-                , Attr.style "align-items" "center"
-                , Attr.style "justify-content" "center"
+                , Attr.style "flex-direction" "column"
                 ]
-                [ Html.div
-                    []
-                    (List.map (viewActivitySelect model.selectedActivity) [ Work, Meeting, CodeReview, Cooperation, SecondLine ])
-                ]
+                (List.map (viewActivitySelect model.selectedActivity) [ Just Work, Just Meeting, Just CodeReview, Just Cooperation, Just SecondLine, Nothing ])
             , Html.div
-                [ Attr.style "flex" "0 0 200px"
+                [ Attr.style "flex" "0 0 auto"
+                , Attr.style "width" "200px"
+                , Attr.style "margin-left" "40px"
+                , Attr.style "padding-right" "54px"
                 , Attr.style "user-select" "none"
                 ]
                 (List.range 0 48 |> List.map (viewSegment model.segments))
             , Html.div
-                [ Attr.style "flex" "0 0 500px"
-                , Attr.style "align-items" "center"
-                , Attr.style "display" "flex"
-                , Attr.style "flex-direction" "column"
-                , Attr.style "align-items" "center"
-                , Attr.style "justify-content" "center"
+                [ Attr.style "flex" "0 0 auto"
+                , Attr.style "margin-left" "40px"
                 ]
                 [ Html.div
                     [ Attr.style "width" "200px"
@@ -211,7 +172,7 @@ view model =
                     ]
                 , Html.div
                     []
-                    (List.map viewSummary (List.sortBy (Tuple.second >> negate) summary))
+                    (List.map (viewSummary sumOfTime) (List.sortBy (Tuple.second >> negate) summary))
                 , case List.sum (List.map Tuple.second summary) of
                     0 ->
                         Html.text ""
@@ -226,16 +187,18 @@ view model =
 viewTotal : ( Int, Int ) -> Html msg
 viewTotal ( hh, mm ) =
     Html.div
-        [ Attr.style "font-size" "18px"
-        , Attr.style "font-weight" "700"
+        [ Attr.style "font-weight" "700"
+        , Attr.style "padding-left" "32px"
+        , Attr.style "border-top" "solid #CCC 2px"
+        , Attr.style "margin-top" "4px"
+        , Attr.style "padding-top" "4px"
         ]
-        [ Html.text "Totalt: "
-        , Html.text (String.fromInt hh ++ "h ")
+        [ Html.text (String.fromInt hh ++ "h ")
         , Html.text (String.fromInt mm ++ "m")
         ]
 
 
-viewActivitySelect : Activity -> Activity -> Html Msg
+viewActivitySelect : Maybe Activity -> Maybe Activity -> Html Msg
 viewActivitySelect selectedActivity activity =
     Html.div
         [ Attr.style "margin-bottom" "25px"
@@ -248,7 +211,9 @@ viewActivitySelect selectedActivity activity =
             [ Attr.style "width" "50px"
             , Attr.style "height" "50px"
             , Attr.style "position" "relative"
-            , Attr.style "background-color" (activityColor activity)
+            , Maybe.map activityColor activity
+                |> Maybe.withDefault "#eee"
+                |> Attr.style "background-color"
             , Attr.style "border-radius" "50px"
             , Attr.style "cursor" "pointer"
             , Attr.style "margin" "0 auto 4px auto"
@@ -260,7 +225,9 @@ viewActivitySelect selectedActivity activity =
                 Attr.style "border" "5px solid transparent"
             ]
             []
-        , Html.text (activityString activity)
+        , Maybe.map activityString activity
+            |> Maybe.withDefault "Inget"
+            |> Html.text
         ]
 
 
@@ -269,25 +236,28 @@ segmentsToHoursAndMinutes n =
     ( n // 4, 15 * remainderBy 4 n )
 
 
-viewSummary : ( Activity, Int ) -> Html msg
-viewSummary ( activity, n ) =
+viewSummary : Int -> ( Activity, Int ) -> Html msg
+viewSummary sum ( activity, n ) =
     let
         hh =
             n // 4
 
         mm =
             15 * remainderBy 4 n
+
+        percent =
+            round (100 * (toFloat n / toFloat sum))
     in
     Html.div
-        [ Attr.style "line-height" "50px"
-        , Attr.style "display" "flex"
-        , Attr.style "white-space" "nowrap"
+        [ Attr.style "display" "flex"
+        , Attr.style "margin-bottom" "4px"
         ]
         [ Html.div
-            [ Attr.style "flex" "0 0 50px"
+            [ Attr.style "flex" "0 0 auto"
             , Attr.style "display" "flex"
             , Attr.style "align-items" "center"
             , Attr.style "justify-content" "center"
+            , Attr.style "margin-right" "12px"
             ]
             [ Html.div
                 [ Attr.style "width" "20px"
@@ -299,6 +269,8 @@ viewSummary ( activity, n ) =
             ]
         , Html.text (String.fromInt hh ++ "h ")
         , Html.text (String.fromInt mm ++ "m")
+        , Html.text " / "
+        , Html.text (String.fromInt percent ++ "%")
         , Html.text " - "
         , Html.text (activityString activity)
         ]
