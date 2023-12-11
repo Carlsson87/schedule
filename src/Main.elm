@@ -323,7 +323,7 @@ view model =
             Schedule ->
                 Html.div
                     []
-                    (List.map viewHour (List.range 6 18))
+                    (List.map viewHour (List.range 0 23))
 
             EditingActivities value ->
                 Html.div
